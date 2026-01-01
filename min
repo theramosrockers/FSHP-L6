@@ -1,0 +1,286 @@
+/**
+ * FSHP-L6: Null Dimension Recursive Compression
+ * Minimum Implementation
+ * 
+ * MIT License
+ * 
+ * Copyright (c) 2026 Brian Richard Ramos
+ * theramosrockers@gmail.com
+ * 
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ * 
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ * 
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ * 
+ * ---
+ * 
+ * The Null Dimension: Where absence becomes reference,
+ * and structure reveals its seed.
+ * 
+ * ∅ → 🌀 → ∞
+ */
+
+const FSHP = {
+  MAGIC: [0x46, 0x53, 0x48, 0x50], // "FSHP"
+  VERSION: 6,
+  MIN_PATTERN: 4,
+  MAX_PATTERN: 64,
+  ESCAPE: 0xFF,
+
+  // Compress data using Null Dimension method
+  compress(data) {
+    const bytes = data instanceof Uint8Array ? data : new TextEncoder().encode(data);
+    
+    // Find patterns
+    const patterns = this.findPatterns(bytes);
+    
+    // If no patterns, store raw
+    if (patterns.length === 0) {
+      return this.packRaw(bytes);
+    }
+    
+    // Build dictionary and substitute
+    const { encoded, dict } = this.substitute(bytes, patterns);
+    
+    // Pack output
+    return this.pack(encoded, dict, bytes.length);
+  },
+
+  // Decompress data
+  decompress(compressed) {
+    const view = new DataView(compressed.buffer || compressed);
+    let pos = 0;
+    
+    // Verify magic
+    for (let i = 0; i < 4; i++) {
+      if (compressed[pos++] !== this.MAGIC[i]) {
+        throw new Error('Invalid FSHP format');
+      }
+    }
+    
+    // Read header
+    const version = compressed[pos++];
+    const flags = compressed[pos++];
+    const origSize = view.getUint32(pos, true); pos += 4;
+    
+    // Raw storage
+    if (flags & 0x01) {
+      return new Uint8Array(compressed.slice(pos, pos + origSize));
+    }
+    
+    // Read dictionary
+    const dictCount = compressed[pos++];
+    const dict = [];
+    
+    for (let i = 0; i < dictCount; i++) {
+      const len = compressed[pos++];
+      dict.push(compressed.slice(pos, pos + len));
+      pos += len;
+    }
+    
+    // Read encoded data
+    const encodedLen = view.getUint32(pos, true); pos += 4;
+    const encoded = compressed.slice(pos, pos + encodedLen);
+    
+    // Expand
+    return this.expand(encoded, dict, origSize);
+  },
+
+  // Find recurring patterns
+  findPatterns(bytes) {
+    const counts = new Map();
+    
+    // Scan for patterns of various lengths
+    for (let len = this.MIN_PATTERN; len <= Math.min(this.MAX_PATTERN, bytes.length >> 1); len++) {
+      for (let i = 0; i <= bytes.length - len; i++) {
+        const pattern = bytes.slice(i, i + len);
+        const key = pattern.join(',');
+        counts.set(key, (counts.get(key) || 0) + 1);
+      }
+    }
+    
+    // Filter and rank by savings
+    const patterns = [];
+    
+    for (const [key, count] of counts) {
+      if (count < 2) continue;
+      
+      const pattern = new Uint8Array(key.split(',').map(Number));
+      const savings = (pattern.length - 1) * count - pattern.length - 2;
+      
+      if (savings > 0) {
+        patterns.push({ pattern, count, savings });
+      }
+    }
+    
+    // Sort by savings, take top patterns
+    patterns.sort((a, b) => b.savings - a.savings);
+    return patterns.slice(0, 254).map(p => p.pattern);
+  },
+
+  // Substitute patterns with symbols
+  substitute(bytes, patterns) {
+    let data = Array.from(bytes);
+    const dict = [];
+    
+    for (let sym = 0; sym < patterns.length; sym++) {
+      const pattern = patterns[sym];
+      const patternArr = Array.from(pattern);
+      const newData = [];
+      let i = 0;
+      
+      while (i < data.length) {
+        let match = true;
+        
+        if (i <= data.length - pattern.length) {
+          for (let j = 0; j < pattern.length; j++) {
+            if (data[i + j] !== patternArr[j]) {
+              match = false;
+              break;
+            }
+          }
+        } else {
+          match = false;
+        }
+        
+        if (match) {
+          newData.push(this.ESCAPE, sym);
+          i += pattern.length;
+        } else {
+          if (data[i] === this.ESCAPE) {
+            newData.push(this.ESCAPE, this.ESCAPE);
+          } else {
+            newData.push(data[i]);
+          }
+          i++;
+        }
+      }
+      
+      // Only keep if it helped
+      if (newData.length < data.length) {
+        data = newData;
+        dict.push(pattern);
+      }
+    }
+    
+    return { encoded: new Uint8Array(data), dict };
+  },
+
+  // Expand symbols back to patterns
+  expand(encoded, dict, origSize) {
+    const result = [];
+    let i = 0;
+    
+    while (i < encoded.length && result.length < origSize) {
+      if (encoded[i] === this.ESCAPE) {
+        i++;
+        if (encoded[i] === this.ESCAPE) {
+          result.push(this.ESCAPE);
+        } else {
+          const pattern = dict[encoded[i]];
+          for (const b of pattern) {
+            result.push(b);
+          }
+        }
+      } else {
+        result.push(encoded[i]);
+      }
+      i++;
+    }
+    
+    return new Uint8Array(result);
+  },
+
+  // Pack compressed output
+  pack(encoded, dict, origSize) {
+    const parts = [];
+    
+    // Magic + version + flags
+    parts.push(new Uint8Array([...this.MAGIC, this.VERSION, 0x00]));
+    
+    // Original size (4 bytes LE)
+    const sizeBuf = new ArrayBuffer(4);
+    new DataView(sizeBuf).setUint32(0, origSize, true);
+    parts.push(new Uint8Array(sizeBuf));
+    
+    // Dictionary
+    parts.push(new Uint8Array([dict.length]));
+    for (const pattern of dict) {
+      parts.push(new Uint8Array([pattern.length]));
+      parts.push(pattern);
+    }
+    
+    // Encoded length + data
+    const lenBuf = new ArrayBuffer(4);
+    new DataView(lenBuf).setUint32(0, encoded.length, true);
+    parts.push(new Uint8Array(lenBuf));
+    parts.push(encoded);
+    
+    // Concatenate
+    const totalLen = parts.reduce((sum, p) => sum + p.length, 0);
+    const result = new Uint8Array(totalLen);
+    let pos = 0;
+    for (const part of parts) {
+      result.set(part, pos);
+      pos += part.length;
+    }
+    
+    return result;
+  },
+
+  // Pack raw (incompressible)
+  packRaw(bytes) {
+    const header = new Uint8Array([
+      ...this.MAGIC,
+      this.VERSION,
+      0x01 // Raw flag
+    ]);
+    
+    const sizeBuf = new ArrayBuffer(4);
+    new DataView(sizeBuf).setUint32(0, bytes.length, true);
+    
+    const result = new Uint8Array(header.length + 4 + bytes.length);
+    result.set(header, 0);
+    result.set(new Uint8Array(sizeBuf), header.length);
+    result.set(bytes, header.length + 4);
+    
+    return result;
+  },
+
+  // Utility: compression ratio
+  ratio(original, compressed) {
+    const origLen = original.length || original.byteLength;
+    const compLen = compressed.length || compressed.byteLength;
+    return (origLen / compLen).toFixed(2) + 'x';
+  },
+
+  // Utility: verify roundtrip
+  verify(original) {
+    const bytes = original instanceof Uint8Array ? original : new TextEncoder().encode(original);
+    const compressed = this.compress(bytes);
+    const decompressed = this.decompress(compressed);
+    
+    if (bytes.length !== decompressed.length) return false;
+    for (let i = 0; i < bytes.length; i++) {
+      if (bytes[i] !== decompressed[i]) return false;
+    }
+    return true;
+  }
+};
+
+// Export for Node.js / ES modules
+if (typeof module !== 'undefined') module.exports = FSHP;
+if (typeof window !== 'undefined') window.FSHP = FSHP;
